@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --navy: #050C1A;
+  --navy-2: #0D1829;
+  --navy-3: #131F30;
+  --navy-4: #1A2740;
+  --violet: #7C3AED;
+  --violet-light: #A78BFA;
+  --violet-dim: rgba(124, 58, 237, 0.15);
+  --mint: #10B981;
+  --mint-dim: rgba(16, 185, 129, 0.12);
+  --gold: #F59E0B;
+  --text-1: #F8FAFC;
+  --text-2: #94A3B8;
+  --text-3: #64748B;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-2: rgba(255, 255, 255, 0.12);
+  color-scheme: dark;
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--navy);
+  color: var(--text-1);
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card { @apply rounded-xl border p-5; background: var(--navy-3); border-color: var(--border); }
+  .label { @apply text-xs font-semibold uppercase tracking-wider; color: var(--text-3); }
+  .input { @apply w-full rounded-lg border px-3 py-2 text-sm outline-none; background: var(--navy-4); border-color: var(--border-2); color: var(--text-1); }
+  .input:focus { border-color: var(--violet); }
+  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50; }
+  .btn-primary { @apply btn text-white; background: var(--violet); }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn-ghost { @apply btn border; border-color: var(--border-2); color: var(--text-1); background: transparent; }
+  .btn-ghost:hover:not(:disabled) { background: var(--navy-4); }
+  .btn-sm { @apply px-2.5 py-1 text-xs; }
+}
