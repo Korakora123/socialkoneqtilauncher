@@ -131,7 +131,7 @@ export interface TargetAudience {
   demographics: string;
   painPoints: string[];
   desires: string[];
-  countries?: string[];
+  countries?: string[];            // ISO-3166 alpha-2; the brain also accepts English names and normalises them
   ageMin?: number;
   ageMax?: number;
 }
@@ -604,7 +604,7 @@ export interface CreateClientRequest {
   portal: { enabled: boolean; email?: string; send_welcome?: boolean; approval_mode: ApprovalMode };
   warmup: { new_accounts: boolean };
 }
-export interface CreateClientResponse { client: AgencyClient; brand: Brand; portal_password?: string }
+export interface CreateClientResponse { client: AgencyClient; brand: Brand; portal_password?: string; welcome_sent: boolean }
 
 /** GET /agency/clients → { clients: Array<AgencyClient & { brand: BrandSummary }> } */
 /** POST /agency/clients/bulk { ids: number[], action: 'pause'|'resume'|'send_preview'|'generate' } */
@@ -677,7 +677,7 @@ export interface PlanUpdateRequest {
 /** PUT /auth/profile { name?, email? } → { user } · POST /auth/change-password { current_password, new_password } */
 /** GET|PUT /auth/notifications { telegram_chat_id } */
 
-/** POST /agency/clients/:id/pause|resume → { client } · POST /agency/clients/:id/reset-password { send_email? } → { portal_password } */
+/** POST /agency/clients/:id/pause|resume → { client } · POST /agency/clients/:id/reset-password { send_email? } → { portal_password, welcome_sent } */
 /** GET /agency/clients/:id → { client, brand: BrandSummary, profiles: PlatformProfile[], analytics: AnalyticsSummaryResponse } */
 export interface DomainVerifyResponse { verified: boolean; found: string; expected: string; ssl_provisioned: boolean; message: string }
 
