@@ -7,7 +7,7 @@ import type {
   AgentUpsertProfileRequest, ErrorCode, FriendlyStatus, Job, JobResultRequest, ValidateKeyResponse,
 } from '../shared/contract';
 import type {
-  AdsPowerProfile, AgentSnapshot, LocalResultView, ProfileTestResult, RunningJobView,
+  AdsPowerProfile, AgentSnapshot, HealthCheckView, LocalResultView, ProfileTestResult, RunningJobView,
 } from '../shared/ipc';
 import { connectProfile, type BrowserSession } from './browser';
 import { BrainClient, BrainError } from './brainClient';
@@ -74,6 +74,9 @@ export class AgentRuntime {
   private readonly recent: LocalResultView[] = [];
   private readonly pendingResults: JobResultRequest[] = [];
   private jobsToday = { day: '', count: 0 };
+  /** Login checks in flight, keyed by platform profile id. */
+  private readonly healthChecks = new Map<number, HealthCheckView>();
+  private readonly reloginWatchers = new Map<string, ReturnType<typeof setInterval>>();
   private generation = 0;
   private readonly sleep: SleepFn;
 
@@ -184,6 +187,10 @@ export class AgentRuntime {
   /** Stops polling/heartbeat. Running jobs are cancelled only when `cancelRunning` is true. */
   stop(cancelRunning = false): void {
     this.generation++;
+    if (cancelRunning) {
+      for (const t of this.reloginWatchers.values()) clearInterval(t);
+      this.reloginWatchers.clear();
+    }
     this.heartbeat?.stop();
     this.poller?.stop();
     if (cancelRunning) this.poller?.cancelAll();
@@ -221,6 +228,7 @@ export class AgentRuntime {
     });
     this.emit();
     this.log.info('job started', { job_id: job.id, type: job.type });
+    this.updateHealthByJob(job.id, { state: 'running' });
     const agentId = this.registration?.agent_id ?? this.cfg.agent_id ?? '';
     try {
       const result = await executeJob(job, {
@@ -235,7 +243,13 @@ export class AgentRuntime {
           const v = this.runningViews.get(j.id);
           if (v) { v.step_index = i; v.step_total = total; v.step_label = label; }
           this.emit();
-          void this.brain.progress({ job_id: j.id, step_index: i, step_total: total, label }).catch(() => undefined);
+        },
+        reportProgress: async (j, i, total, label) => {
+          try {
+            return (await this.brain.progress({ job_id: j.id, step_index: i, step_total: total, label: label.slice(0, 300) })).cancel;
+          } catch {
+            return false;
+          }
         },
       }, signal);
       await this.report(result, job);
@@ -250,6 +264,9 @@ export class AgentRuntime {
     this.pushRecent({
       id: job.id, label: job.label, platform: job.platform, brand_name: job.brand_name,
       status: result.status, at: result.finished_at, ...(result.error ? { error: result.error } : {}),
+    });
+    this.updateHealthByJob(job.id, {
+      state: 'done', result: result.status, code: result.error?.code ?? null, message: result.error?.message ?? null,
     });
     const today = new Date().toISOString().slice(0, 10);
     if (this.jobsToday.day !== today) this.jobsToday = { day: today, count: 0 };
@@ -329,12 +346,67 @@ export class AgentRuntime {
   adsProfiles(): Promise<AdsPowerProfile[]> { return this.adspower.listProfiles(); }
   async saveProfile(req: AgentUpsertProfileRequest): Promise<void> { await this.brain.upsertProfile(req); }
 
-  async openProfile(adsId: string): Promise<void> {
+  /**
+   * Re-login: opens the AdsPower profile for the user. With a profileId, watches the profile and
+   * queues a brain login check as soon as the user closes the browser window.
+   */
+  async openProfile(adsId: string, profileId?: number, watchEveryMs = 5000, maxWatchMs = 60 * 60_000): Promise<void> {
     if (this.locks.isLocked(adsId)) throw new AgentError('PROFILE_BUSY', 'This profile is busy with a job right now');
     await this.adspower.start(adsId);
+    if (profileId === undefined) return;
+    this.setHealth(profileId, adsId, { job_id: null, state: 'waiting_login', result: null, code: null, message: null });
+    const prev = this.reloginWatchers.get(adsId);
+    if (prev) clearInterval(prev);
+    const startedAt = Date.now();
+    let checking = false;
+    const timer = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      void (async () => {
+        let active = true;
+        try { active = await this.adspower.isActive(adsId); } catch { active = true; }
+        if (!active || Date.now() - startedAt > maxWatchMs) {
+          clearInterval(timer);
+          this.reloginWatchers.delete(adsId);
+          await this.queueHealthCheck(profileId, adsId);
+        }
+      })().finally(() => { checking = false; });
+    }, watchEveryMs);
+    this.reloginWatchers.set(adsId, timer);
   }
 
-  /** Starts the profile, checks the browser opens and which IP it exits from, stops it. */
+  /** Asks the brain to queue a `<platform>_health_check` job; our poller picks it up on the next poll. */
+  async queueHealthCheck(profileId: number, adsId: string): Promise<string | null> {
+    try {
+      const { job_id } = await this.brain.healthCheck(profileId);
+      this.setHealth(profileId, adsId, { job_id, state: 'queued', result: null, code: null, message: null });
+      void this.poller?.tick();
+      return job_id;
+    } catch (e) {
+      const code: ErrorCode = e instanceof BrainError && e.code ? e.code : 'UNKNOWN';
+      this.setHealth(profileId, adsId, { job_id: null, state: 'failed', result: null, code, message: errorMessage(e) });
+      return null;
+    }
+  }
+
+  private setHealth(profileId: number, adsId: string, v: Omit<HealthCheckView, 'profile_id' | 'adspower_profile_id' | 'updated_at'>): void {
+    this.healthChecks.set(profileId, { profile_id: profileId, adspower_profile_id: adsId, ...v, updated_at: new Date().toISOString() });
+    this.emit();
+  }
+
+  private updateHealthByJob(jobId: string, patch: Partial<HealthCheckView>): void {
+    for (const h of this.healthChecks.values()) {
+      if (h.job_id === jobId) {
+        Object.assign(h, patch, { updated_at: new Date().toISOString() });
+        this.emit();
+      }
+    }
+  }
+
+  /**
+   * Profile Test: (1) start the AdsPower profile, check the browser opens and read its exit IP,
+   * stop it; (2) with a profileId, queue the brain's login check job for the profile.
+   */
   async testProfile(adsId: string, profileId?: number): Promise<ProfileTestResult> {
     const owner = `test:${adsId}:${Date.now()}`;
     if (!this.locks.tryAcquire(adsId, owner)) {
@@ -366,12 +438,14 @@ export class AgentRuntime {
       this.locks.release(adsId, owner);
     }
     if (profileId !== undefined) {
-      await this.brain.profileHealth({
-        profile_id: profileId,
-        healthy: result.opened,
-        ...(result.error ? { reason: result.error.code } : {}),
-        ...(result.ip ? { detected_ip: result.ip } : {}),
-      }).catch((e: unknown) => this.log.warn('profile health report failed', { reason: errorMessage(e).slice(0, 80) }));
+      if (!result.opened) {
+        // The profile cannot even open: report that directly, a login check could not run either.
+        await this.brain.profileHealth({
+          profile_id: profileId, healthy: false, reason: result.error?.code ?? 'ADSPOWER_ERROR',
+        }).catch((e: unknown) => this.log.warn('profile health report failed', { reason: errorMessage(e).slice(0, 80) }));
+      } else {
+        result.health_job_id = await this.queueHealthCheck(profileId, adsId);
+      }
     }
     return result;
   }
@@ -431,6 +505,7 @@ export class AgentRuntime {
         id: j.id, label: j.label, platform: j.platform, brand_name: j.brand_name, scheduled_for: j.scheduled_for,
       })),
       recent: [...this.recent],
+      health_checks: [...this.healthChecks.values()],
       jobs_today_local: this.jobsToday.day === today ? this.jobsToday.count : 0,
       version: this.opts.version,
       latest_version: this.latestVersion,

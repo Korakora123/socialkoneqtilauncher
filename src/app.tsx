@@ -71,7 +71,7 @@ export function App(): JSX.Element {
         ) : screen === 'status' ? (
           <Status snap={snap} onSettings={() => setScreen('settings')} />
         ) : screen === 'profiles' ? (
-          <Profiles onAdd={openAdd} />
+          <Profiles snap={snap} onAdd={openAdd} />
         ) : screen === 'add-profile' ? (
           <AddProfile draft={draft} onDone={() => setScreen('profiles')} />
         ) : screen === 'activity' ? (

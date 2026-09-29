@@ -57,6 +57,7 @@ export interface AgentSnapshot {
   running: RunningJobView[];
   waiting: WaitingJobView[];
   recent: LocalResultView[];
+  health_checks: HealthCheckView[];
   jobs_today_local: number;
   version: string;
   latest_version: string | null;
@@ -93,6 +94,24 @@ export interface ProfileTestResult {
   opened: boolean;
   ip: string | null;
   error: { code: ErrorCode; message: string } | null;
+  /** Set when a brain login check (`<platform>_health_check` job) was queued for this profile. */
+  health_job_id?: string | null;
+}
+
+/**
+ * A profile login check in flight. The brain queues a health-check job; this launcher picks it
+ * up on its next poll and the brain updates the profile from the job result.
+ */
+export interface HealthCheckView {
+  profile_id: number;
+  adspower_profile_id: string;
+  job_id: string | null;
+  state: 'waiting_login' | 'queued' | 'running' | 'done' | 'failed';
+  /** Job result status once done. */
+  result: 'success' | 'failed' | 'expired' | 'cancelled' | null;
+  code: ErrorCode | null;
+  message: string | null;
+  updated_at: string;
 }
 
 export type IpcResult<T> = { ok: true; data: T } | { ok: false; error: { message: string; code?: ErrorCode } };
@@ -115,8 +134,11 @@ export interface SkBridge {
   getAdsPowerProfiles(): Promise<IpcResult<AdsPowerProfile[]>>;
   testProfile(adspowerProfileId: string, profileId?: number): Promise<IpcResult<ProfileTestResult>>;
   saveProfile(req: AgentUpsertProfileRequest): Promise<IpcResult<{ saved: true }>>;
-  /** Opens the AdsPower profile window so the user can log in manually (Re-login). */
-  openProfile(adspowerProfileId: string): Promise<IpcResult<{ opened: true }>>;
+  /**
+   * Opens the AdsPower profile window so the user can log in manually (Re-login).
+   * With profileId, a login check is queued automatically once the user closes the window.
+   */
+  openProfile(adspowerProfileId: string, profileId?: number): Promise<IpcResult<{ opened: true }>>;
   checkForUpdates(): Promise<IpcResult<UpdateCheckResult>>;
   openDashboard(): Promise<void>;
 }

@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sk } from '../renderer/bridge';
 import type { AgentProfilesResponse, ProfileStatus } from '../shared/contract';
-import type { AdsPowerProfile, ProfileTestResult } from '../shared/ipc';
+import type { AdsPowerProfile, AgentSnapshot, HealthCheckView, ProfileTestResult } from '../shared/ipc';
 import { Card, Details, Dot, Notice, PLATFORM_ICON, PLATFORM_NAME, timeAgo } from '../components/ui';
 import type { ProfileDraft } from './AddProfile';
 
@@ -16,12 +16,38 @@ function health(p: BrainProfile): { color: string; text: string } {
   return p.session_healthy ? { color: '#10B981', text: 'Healthy' } : { color: '#F59E0B', text: 'Check needed' };
 }
 
+const CHECK_ERROR_TEXT: Record<string, string> = {
+  SESSION_EXPIRED: 'Not logged in — use Re-login',
+  CAPTCHA: 'The platform wants a verification — use Re-login',
+  BANNED: 'The account needs attention on the platform',
+  ACTION_BLOCKED: 'The platform is limiting this account right now',
+  ADSPOWER_ERROR: 'AdsPower could not open this profile',
+  PROFILE_BUSY: 'The profile was busy — try again shortly',
+  VALIDATION: 'A login check is not available for this platform yet',
+};
+
+const PENDING: Array<HealthCheckView['state']> = ['waiting_login', 'queued', 'running'];
+
+function checkText(h: HealthCheckView, paused: boolean): { kind: 'ok' | 'error' | 'info'; text: string } {
+  switch (h.state) {
+    case 'waiting_login': return { kind: 'info', text: 'Log in inside the AdsPower window, then close it — we will check the login automatically.' };
+    case 'queued': return { kind: 'info', text: paused ? 'Checking… (resume the agent so the check can run)' : 'Checking… the login check starts within a few seconds.' };
+    case 'running': return { kind: 'info', text: 'Checking login…' };
+    case 'failed': return { kind: 'error', text: CHECK_ERROR_TEXT[h.code ?? ''] ?? 'The login check could not be started.' };
+    case 'done':
+      if (h.result === 'success') return { kind: 'ok', text: 'Logged in — profile is healthy' };
+      if (h.result === 'expired' || h.result === 'cancelled') return { kind: 'info', text: 'The login check did not run — try again.' };
+      return { kind: 'error', text: CHECK_ERROR_TEXT[h.code ?? ''] ?? 'The login check did not pass.' };
+    default: return { kind: 'info', text: '' };
+  }
+}
+
 const PROXY_NAME: Record<string, string> = {
   static_residential: 'Residential', wireguard: 'WireGuard', mobile: 'Mobile', none: 'No proxy',
 };
 
 /** §48 Screen 2 — Profile Manager. */
-export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void }): JSX.Element {
+export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: ProfileDraft | null) => void }): JSX.Element {
   const [brain, setBrain] = useState<AgentProfilesResponse | null>(null);
   const [ads, setAds] = useState<AdsPowerProfile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +65,21 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // Login checks run as brain jobs: refresh the brain's profile list whenever a check changes
+  // state (picked up on a poll, result reported) and every 15 s while any check is pending.
+  const checks = useMemo(() => new Map(snap.health_checks.map((h) => [h.profile_id, h])), [snap.health_checks]);
+  const checkSig = snap.health_checks.map((h) => `${h.profile_id}:${h.state}`).join('|');
+  const lastSig = useRef(checkSig);
+  const anyPending = snap.health_checks.some((h) => PENDING.includes(h.state));
+  useEffect(() => {
+    if (lastSig.current !== checkSig) { lastSig.current = checkSig; void load(); }
+  }, [checkSig, load]);
+  useEffect(() => {
+    if (!anyPending) return;
+    const t = setInterval(() => void load(), 15_000);
+    return () => clearInterval(t);
+  }, [anyPending, load]);
 
   const adsIds = useMemo(() => new Set((ads ?? []).map((p) => p.user_id)), [ads]);
   const linked = useMemo(() => new Set((brain?.brands ?? []).flatMap((b) => b.profiles.map((p) => p.adspower_profile_id))), [brain]);
@@ -59,8 +100,8 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
     void load();
   };
 
-  const relogin = async (adsId: string): Promise<void> => {
-    const r = await sk.openProfile(adsId);
+  const relogin = async (adsId: string, profileId: number): Promise<void> => {
+    const r = await sk.openProfile(adsId, profileId);
     setTests((t) => ({ ...t, [adsId]: r.ok ? { opened: true, ip: null, error: null } : { opened: false, ip: null, error: { code: r.error.code ?? 'ADSPOWER_ERROR', message: r.error.message } } }));
   };
 
@@ -88,6 +129,8 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
             {b.profiles.map((p) => {
               const h = health(p);
               const t = tests[p.adspower_profile_id];
+              const hc = checks.get(p.id);
+              const checking = t === 'running' || (hc !== undefined && PENDING.includes(hc.state));
               const missing = ads !== null && !adsIds.has(p.adspower_profile_id);
               return (
                 <div key={p.id} className="py-3" style={{ borderColor: 'var(--border)' }}>
@@ -95,7 +138,9 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
                     <span className="w-6 text-lg">{PLATFORM_ICON[p.platform]}</span>
                     <span className="w-24 font-medium">{PLATFORM_NAME[p.platform]}</span>
                     <span className="text-sm text-ink-2">profile: <span className="font-mono text-ink-1">{p.adspower_profile_id}</span></span>
-                    <span className="ml-auto inline-flex items-center gap-2 text-sm"><Dot color={h.color} /> {h.text}</span>
+                    <span className="ml-auto inline-flex items-center gap-2 text-sm">
+                      {checking ? <><Dot color="#F59E0B" /> Checking…</> : <><Dot color={h.color} /> {h.text}</>}
+                    </span>
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-6 gap-y-1 pl-9 text-sm text-ink-2">
                     <span>Handle: <span className="text-ink-1">{p.handle ?? '—'}</span></span>
@@ -103,15 +148,15 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
                     <span>IP: {t && t !== 'running' && t.ip ? t.ip : p.proxy_host ?? '—'} ({PROXY_NAME[p.proxy_type] ?? p.proxy_type})</span>
                     {missing && <span className="text-gold">Not found in AdsPower</span>}
                     <span className="ml-auto flex gap-2">
-                      {p.status === 'session_expired' && (
-                        <button type="button" className="btn-ghost btn-sm" onClick={() => void relogin(p.adspower_profile_id)}>Re-login</button>
+                      {(p.status === 'session_expired' || hc?.code === 'SESSION_EXPIRED' || hc?.code === 'CAPTCHA') && (
+                        <button type="button" className="btn-ghost btn-sm" disabled={checking} onClick={() => void relogin(p.adspower_profile_id, p.id)}>Re-login</button>
                       )}
                       <button type="button" className="btn-ghost btn-sm" onClick={() => onAdd({
                         brand_id: b.brand_id, platform: p.platform, handle: p.handle ?? '', adspower_profile_id: p.adspower_profile_id,
                         proxy_type: p.proxy_type, proxy_host: p.proxy_host ?? '', proxy_port: p.proxy_port ?? '',
                       })}>Edit</button>
-                      <button type="button" className="btn-ghost btn-sm" disabled={t === 'running'} onClick={() => void test(p.adspower_profile_id, p.id)}>
-                        {t === 'running' ? 'Testing…' : 'Test'}
+                      <button type="button" className="btn-ghost btn-sm" disabled={checking} onClick={() => void test(p.adspower_profile_id, p.id)}>
+                        {checking ? 'Checking…' : 'Test'}
                       </button>
                     </span>
                   </div>
@@ -122,6 +167,17 @@ export function Profiles({ onAdd }: { onAdd: (d: ProfileDraft | null) => void })
                         : <Notice kind="error">This profile could not be opened. <Details text={t.error ? `${t.error.code}: ${t.error.message}` : null} /></Notice>}
                     </div>
                   )}
+                  {hc && (() => {
+                    const c = checkText(hc, snap.paused_local || snap.paused_by_brain);
+                    return (
+                      <div className="mt-2 pl-9">
+                        <Notice kind={c.kind}>
+                          {c.text}
+                          {hc.code && <Details text={`${hc.code}${hc.message ? `: ${hc.message}` : ''}`} />}
+                        </Notice>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}

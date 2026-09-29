@@ -255,8 +255,8 @@ function registerIpc(): void {
     await rt().saveProfile(req);
     return { saved: true as const };
   }));
-  ipcMain.handle(IPC.openProfile, (_e, adsId: string) => wrap(async () => {
-    await rt().openProfile(String(adsId));
+  ipcMain.handle(IPC.openProfile, (_e, adsId: string, profileId?: number) => wrap(async () => {
+    await rt().openProfile(String(adsId), typeof profileId === 'number' ? profileId : undefined);
     return { opened: true as const };
   }));
   ipcMain.handle(IPC.checkForUpdates, () => wrap(() => checkForUpdates(false)));

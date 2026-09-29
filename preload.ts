@@ -24,7 +24,7 @@ const api: SkBridge = {
   getAdsPowerProfiles: () => ipcRenderer.invoke(IPC.getAdsPowerProfiles),
   testProfile: (adsId, profileId) => ipcRenderer.invoke(IPC.testProfile, adsId, profileId),
   saveProfile: (req) => ipcRenderer.invoke(IPC.saveProfile, req),
-  openProfile: (adsId) => ipcRenderer.invoke(IPC.openProfile, adsId),
+  openProfile: (adsId, profileId) => ipcRenderer.invoke(IPC.openProfile, adsId, profileId),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   openDashboard: () => ipcRenderer.invoke(IPC.openDashboard),
 };
