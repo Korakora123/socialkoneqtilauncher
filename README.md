@@ -58,6 +58,10 @@ npm run build      # typecheck (tsc --noEmit) + esbuild main/preload + vite rend
 npm test           # vitest
 ```
 
+`tests/brainPlaybooks.test.ts` runs every playbook of the private brain repo through the executor
+when `/home/user/socialkoneqtigateway/src/playbooks` exists locally, and is skipped otherwise.
+Playbooks are never copied into this repository.
+
 For local testing copy `.env.example` to `.env` in the repo root and fill in your own
 API key from the dashboard (Settings → API key). The file is git-ignored.
 
@@ -106,4 +110,8 @@ Bump `version` in `package.json` for every release.
 - Pause (tray, Status screen or Settings) stops leasing and starting jobs; running jobs finish.
   The brain can also pause the agent through the heartbeat response.
 - The profile Test button opens the AdsPower profile, reads its exit IP from
-  `https://api.ipify.org` (a neutral utility endpoint), closes it and reports health to the brain.
+  `https://api.ipify.org` (a neutral utility endpoint) and closes it, then asks the brain to queue a
+  login-check job (`POST /agent/profiles/:id/health-check`) that this app runs on its next poll.
+  Re-login opens the profile for a manual login and queues the same check once the window is closed.
+- `POST /agent/progress` is the brain's cancel channel: a step-0 call is made just before a job
+  starts, and a `cancel: true` response at any point stops the job and reports it as cancelled.
