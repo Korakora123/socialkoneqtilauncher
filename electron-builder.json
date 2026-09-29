@@ -1,0 +1,45 @@
+{
+  "appId": "com.koneqti.socialkoneqti",
+  "productName": "SocialKoneqti Agent",
+  "copyright": "Copyright \u00a9 Koneqti",
+  "directories": {
+    "output": "release",
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/**/*",
+    "package.json",
+    "!**/*.map"
+  ],
+  "asar": true,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "artifactName": "SocialKoneqti-Setup.exe"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "SocialKoneqti Agent",
+    "runAfterFinish": true
+  },
+  "publish": [
+    {
+      "provider": "generic",
+      "url": "https://social.koneqti.com/download"
+    }
+  ],
+  "asarUnpack": [
+    "node_modules/playwright-core/**",
+    "node_modules/cloakbrowser/**"
+  ]
+}
