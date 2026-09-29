@@ -2,7 +2,7 @@ import axios, { AxiosError, type AxiosInstance } from 'axios';
 import type {
   AgentErrorRequest, AgentProfilesResponse, AgentRegisterRequest, AgentRegisterResponse,
   AgentStatsResponse, AgentUpsertProfileRequest, ApiError, ErrorCode, HealthResponse,
-  HeartbeatRequest, HeartbeatResponse, JobProgressRequest, JobResultRequest, JobResultResponse,
+  HeartbeatRequest, HeartbeatResponse, JobProgressRequest, JobProgressResponse, JobResultRequest, JobResultResponse,
   JobsResponse, Playbook, ProfileHealthRequest, ValidateKeyResponse,
 } from '../shared/contract';
 
@@ -81,13 +81,19 @@ export class BrainClient {
   /** The playbook is returned to the caller and must only be held in memory. */
   playbook(type: string): Promise<Playbook> { return this.get(`/agent/playbook/${encodeURIComponent(type)}`); }
 
-  progress(req: JobProgressRequest): Promise<unknown> { return this.post('/agent/progress', req); }
+  /** Also the cancel channel: `cancel: true` means the brain cancelled the job. */
+  async progress(req: JobProgressRequest): Promise<JobProgressResponse> {
+    const res = await this.post<Partial<JobProgressResponse> | undefined>('/agent/progress', req);
+    return { ok: true, cancel: Boolean(res?.cancel) };
+  }
   result(req: JobResultRequest): Promise<JobResultResponse> { return this.post('/agent/result', req, 60_000); }
   error(req: AgentErrorRequest): Promise<unknown> { return this.post('/agent/error', req); }
 
   profiles(): Promise<AgentProfilesResponse> { return this.get('/agent/profiles'); }
   upsertProfile(req: AgentUpsertProfileRequest): Promise<unknown> { return this.post('/agent/profiles', req); }
   profileHealth(req: ProfileHealthRequest): Promise<unknown> { return this.post('/agent/profiles/health', req); }
+  /** Queues a `<platform>_health_check` job (202). Its result arrives through the normal job flow. */
+  healthCheck(profileId: number): Promise<{ job_id: string }> { return this.post(`/agent/profiles/${profileId}/health-check`); }
 
   stats(): Promise<AgentStatsResponse> { return this.get('/agent/stats'); }
 }

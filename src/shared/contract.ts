@@ -435,8 +435,10 @@ export interface HbePlan {
   think_ms: number;                // pause before the final "publish" click
 }
 
-/** POST /agent/progress */
+/** POST /agent/progress — also the cancel channel: `cancel: true` means the brain cancelled the job
+ *  (brand paused, post rejected, crisis…). The launcher stops at once and reports status 'cancelled'. */
 export interface JobProgressRequest { job_id: string; step_index: number; step_total: number; label: string }
+export interface JobProgressResponse { ok: true; cancel: boolean }
 
 /** POST /agent/result */
 export interface JobResultRequest {
@@ -646,3 +648,58 @@ export interface SystemHealthResponse {
 }
 /** POST /admin/user/:id/suspend | /admin/user/:id/unsuspend | PUT /admin/user/:id/plan {plan} */
 /** GET /admin/metrics/revenue → { mrr: number, active_users: number, trial_users: number, churn_30d: number, by_plan: Record<Plan, number> } */
+
+// ───────────────────────────────── additional endpoints (v1.1) ─────────────────────────────────
+
+/** POST /brands → { brand: Brand } · POST|PUT /brands/:id/profiles[/:profileId] → { profile: PlatformProfile } */
+/** POST /brands/:id/pause { reason?, resume_expected? } · POST /brands/:id/resume · POST /brands/:id/crisis/resolve → BrandDetailResponse */
+/** POST /brands/:id/profiles/:profileId/health-check → 202 { job_id }  (dashboard "Test") */
+/** POST /agent/profiles/:id/health-check → 202 { job_id }             (launcher "Test"; result arrives via the normal job flow) */
+/** POST /content/:postId/media { files: [{ name, data_b64 }] } → PostResponse   (png/jpg/webp/mp4/mov/pdf) */
+
+/** GET /approval/:token (internal) — one-click email links */
+export interface ApprovalLinkResponse { brand_name: string; brand_id: string; timezone: string; branding: Branding; posts: Post[] }
+/** POST /approval/:token/decide */
+export interface ApprovalDecideRequest { post_id: number; decision: 'approve' | 'reject' | 'revise'; feedback?: string }
+
+/** POST /billing/plan-update (internal, from the verified Stripe webhook) */
+export interface PlanUpdateRequest {
+  user_id: string;
+  plan?: Plan;
+  status?: UserStatus;               // subscription deleted → 'suspended', trialing → 'trial'
+  stripe_status?: string;
+  stripe_customer_id?: string | null;
+  stripe_subscription_id?: string | null;
+  own_accounts_addon?: boolean;
+  plan_expires_at?: string | null;
+}
+
+/** PUT /auth/profile { name?, email? } → { user } · POST /auth/change-password { current_password, new_password } */
+/** GET|PUT /auth/notifications { telegram_chat_id } */
+
+/** POST /agency/clients/:id/pause|resume → { client } · POST /agency/clients/:id/reset-password { send_email? } → { portal_password } */
+/** GET /agency/clients/:id → { client, brand: BrandSummary, profiles: PlatformProfile[], analytics: AnalyticsSummaryResponse } */
+export interface DomainVerifyResponse { verified: boolean; found: string; expected: string; ssl_provisioned: boolean; message: string }
+
+/** GET /agency/analytics/overview */
+export interface AgencyAnalyticsResponse {
+  month: string;
+  clients_managed: number;
+  active_clients: number;
+  platforms_active: number;
+  totals: { posts: number; reach: number; followers_gained: number; engagement_rate: number };
+  top_clients: Array<{ client_id: number; name: string; followers_gained: number; reach: number; engagement_rate: number }>;
+  needs_attention: Array<{ brand_id: string; name: string; reason: string; since: string | null }>;
+  platform_breakdown: Array<{ platform: Platform; reach: number; share: number; engagement_rate: number }>;
+  agent_errors_30d: number;
+}
+/** POST /agency/reports/bulk { month?, email? } → 202 { queued } */
+
+/** POST /ads/credentials/:brandId  { platform:'meta', access_token, ad_account_id, page_id, instagram_user_id? } | { platform:'tiktok', access_token, advertiser_id, identity_id?, identity_type? } */
+
+/** Own accounts (M17): GET /own/portfolio · POST /own/revenue · GET /own/revenue/:accountId · POST /own/links → { code, url } · GET|POST /own/ab-tests
+ *  GET /own/click/:code (internal) → { target }   — the dashboard's public /r/:code logs the click and redirects. */
+
+/** Vault (super admin): GET /vault/status → { exists, unlocked } · POST /vault/unlock { password } · POST /vault/lock */
+/** Admin extras: PUT /admin/user/:id/role { role } · GET /admin/live → { running, next_hour } */
+/** Incidents: GET /incidents?open=1 → { incidents: Incident[] } · POST /incidents/:id/resolve */

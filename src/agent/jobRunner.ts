@@ -15,7 +15,14 @@ export interface JobRunnerDeps {
   now?: () => Date;
   logger: Logger;
   onProgress?: (job: Job, stepIndex: number, stepTotal: number, label: string) => void;
+  /**
+   * POST /agent/progress — the brain's cancel channel. Resolves true when the brain cancelled
+   * the job. Network errors must resolve false (never block a job on a progress call).
+   */
+  reportProgress?: (job: Job, stepIndex: number, stepTotal: number, label: string) => Promise<boolean>;
 }
+
+const cancelledByBrain = (): AgentError => new AgentError('CANCELLED', 'Cancelled by the brain');
 
 /**
  * Executes one leased job end to end and returns the JobResultRequest to report.
@@ -30,6 +37,19 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
     return { ...base, status: 'expired', finished_at: now().toISOString() };
   }
 
+  // Pre-start progress call (step 0): a job cancelled while it waited locally never starts.
+  if (deps.reportProgress && (await deps.reportProgress(job, 0, 0, 'Starting').catch(() => false))) {
+    const err = cancelledByBrain();
+    deps.logger.info('job cancelled before start', { job_id: job.id, type: job.type });
+    return { ...base, status: 'cancelled', finished_at: now().toISOString(), error: { code: err.code, message: err.message } };
+  }
+
+  // Local controller: aborts on the parent signal (shutdown) or on a brain cancel.
+  const ctrl = new AbortController();
+  const onParentAbort = (): void => ctrl.abort(signal?.reason);
+  if (signal?.aborted) onParentAbort();
+  signal?.addEventListener('abort', onParentAbort, { once: true });
+
   let session: BrowserSession | null = null;
   let profileStarted = false;
   try {
@@ -39,6 +59,7 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
     } catch (e) {
       throw new AgentError('INTERNAL', `Playbook unavailable: ${errorMessage(e)}`);
     }
+    if (ctrl.signal.aborted) throw ctrl.signal.reason instanceof AgentError ? ctrl.signal.reason : cancelledByBrain();
     const started = await deps.adspower.start(job.adspower_profile_id);
     profileStarted = true;
     try {
@@ -50,8 +71,14 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
       driver: session.driver,
       sleep: deps.sleep,
       download: deps.download,
-      signal,
-      onProgress: (i, total, label) => deps.onProgress?.(job, i, total, label),
+      signal: ctrl.signal,
+      onProgress: (i, total, label) => {
+        deps.onProgress?.(job, i, total, label);
+        if (!deps.reportProgress) return;
+        void deps.reportProgress(job, i, total, label)
+          .then((cancel) => { if (cancel && !ctrl.signal.aborted) ctrl.abort(cancelledByBrain()); })
+          .catch(() => undefined);
+      },
     });
     return {
       ...base,
@@ -63,7 +90,7 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
   } catch (e) {
     const err = e instanceof AgentError ? e : new AgentError('UNKNOWN', errorMessage(e));
     let screenshot: string | undefined;
-    if (session) {
+    if (session && err.code !== 'CANCELLED') {
       try { screenshot = (await session.driver.screenshot()).toString('base64'); } catch { /* evidence is best effort */ }
     }
     const code: ErrorCode = err.code;
@@ -76,6 +103,7 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
       ...(screenshot ? { screenshot_b64: screenshot } : {}),
     };
   } finally {
+    signal?.removeEventListener('abort', onParentAbort);
     if (session) await session.close().catch(() => undefined);
     if (profileStarted) {
       await deps.adspower.stop(job.adspower_profile_id).catch((e: unknown) => {
