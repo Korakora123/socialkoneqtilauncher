@@ -6,6 +6,7 @@
 import type { ErrorCode, Job, Playbook, PlaybookStep } from '../shared/contract';
 import type { DownloadFn } from './download';
 import { isNavigationError, isTimeoutError, type PageDriver } from './driver';
+import { backupSession, noBackupError, restoreSession, type SessionStore } from './sessionVault';
 import { resolveString, resolveTemplate, type TemplateContext } from './template';
 import { humanType } from './typing';
 import { AgentError, errorMessage, type SleepFn } from './util';
@@ -14,12 +15,21 @@ import { AgentError, errorMessage, type SleepFn } from './util';
 export const DEFAULT_STEP_TIMEOUT_MS = 30_000;
 export const DEFAULT_NAV_TIMEOUT_MS = 60_000;
 
+/** Every step action this executor understands (a playbook using anything else fails). */
+export const KNOWN_ACTIONS: ReadonlySet<PlaybookStep['action']> = new Set<PlaybookStep['action']>([
+  'goto', 'wait_for', 'click', 'click_text', 'type', 'press', 'upload', 'scroll', 'delay', 'think',
+  'assert', 'extract', 'extract_url', 'extract_list', 'if_exists', 'foreach', 'screenshot',
+  'backup_session', 'restore_session',
+]);
+
 export interface ExecutorDeps {
   driver: PageDriver;
   sleep: SleepFn;
   rng?: () => number;
   download: DownloadFn;
   signal?: AbortSignal;
+  /** Local encrypted session backups (backup_session / restore_session). Never reaches the brain. */
+  sessions?: SessionStore;
   /** Called before each top-level step (1-based index). */
   onProgress?: (stepIndex: number, stepTotal: number, label: string) => void;
 }
@@ -37,6 +47,18 @@ const RAW_KEYS = new Set(['files', 'items', 'ms']);
 const NUMBER_KEYS = new Set(['pixels', 'times', 'limit', 'timeout_ms']);
 const BOOL_KEYS = new Set(['optional', 'clear']);
 const URL_ATTRS = new Set(['href', 'src']);
+
+/** First step (depth-first) whose action this executor does not know, or null. */
+export function findUnknownAction(steps: PlaybookStep[]): { id: string; action: string } | null {
+  for (const s of steps) {
+    if (!KNOWN_ACTIONS.has(s.action)) return { id: String((s as { id?: unknown }).id ?? ''), action: String(s.action) };
+    const nested = s.action === 'foreach' ? s.steps ?? []
+      : s.action === 'if_exists' ? [...(s.then ?? []), ...(s.else ?? [])] : [];
+    const hit = findUnknownAction(nested);
+    if (hit) return hit;
+  }
+  return null;
+}
 
 export function stepLabel(step: PlaybookStep): string {
   return step.label ?? step.action.replace(/_/g, ' ');
@@ -57,6 +79,9 @@ export class Executor {
 
   async run(): Promise<ExecutionOutput> {
     const steps = this.playbook.steps ?? [];
+    // Refuse an unsupported playbook before touching the browser.
+    const bad = findUnknownAction(steps);
+    if (bad) throw new AgentError('UNKNOWN', `Unsupported step action: ${bad.action}`, bad.id || undefined);
     if (this.playbook.start_url) {
       const url = resolveString(this.playbook.start_url, this.ctx);
       await this.guarded('start', () => this.navigate(url, 'start'));
@@ -169,6 +194,11 @@ export class Executor {
       else out[k] = this.str(v);
     }
     return out as unknown as PlaybookStep;
+  }
+
+  private sessionStore(stepId: string): SessionStore {
+    if (!this.deps.sessions) throw new AgentError('INTERNAL', 'Session backups are not available on this computer', stepId);
+    return this.deps.sessions;
   }
 
   /** Inside a foreach, extracted values accumulate across iterations instead of overwriting. */
@@ -336,6 +366,19 @@ export class Executor {
         const b64 = png.toString('base64');
         if (step.as) this.outputs[step.as] = b64;
         else this.screenshot = b64;
+        return;
+      }
+      case 'backup_session': {
+        const store = this.sessionStore(id);
+        const n = await this.guarded(id, () => backupSession(d, store, this.job.adspower_profile_id, this.job.platform));
+        if (step.as) this.outputs[step.as] = n;
+        return;
+      }
+      case 'restore_session': {
+        const store = this.sessionStore(id);
+        const n = await this.guarded(id, () => restoreSession(d, store, this.job.adspower_profile_id, this.job.platform, (url) => this.navigate(url, id)));
+        if (n === null && !step.optional) throw noBackupError(id);
+        if (step.as) this.outputs[step.as] = n ?? 0;
         return;
       }
       default: {

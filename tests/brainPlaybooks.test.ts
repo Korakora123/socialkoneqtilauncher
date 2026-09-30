@@ -7,10 +7,10 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { ListField, PageDriver } from '../src/agent/driver';
-import { runPlaybook } from '../src/agent/executor';
+import type { ListField, PageDriver, SessionCookie } from '../src/agent/driver';
+import { KNOWN_ACTIONS, runPlaybook } from '../src/agent/executor';
 import type { Playbook, PlaybookStep } from '../src/shared/contract';
-import { hbe, job } from './helpers';
+import { cookie, hbe, job, MemorySessions } from './helpers';
 
 const DIR = '/home/user/socialkoneqtigateway/src/playbooks';
 const files = existsSync(DIR) ? readdirSync(DIR).filter((f) => f.endsWith('.json')).sort() : [];
@@ -104,6 +104,10 @@ class PermissiveDriver implements PageDriver {
     return [row];
   }
   async screenshot(): Promise<Buffer> { return Buffer.from('png'); }
+  async getCookies(): Promise<SessionCookie[]> { return [cookie('sid')]; }
+  async addCookies(): Promise<void> {}
+  async getLocalStorage(): Promise<Record<string, string>> { return { k: 'v' }; }
+  async setLocalStorage(): Promise<void> {}
 }
 
 function stepActions(steps: PlaybookStep[], out: Set<string> = new Set()): Set<string> {
@@ -116,8 +120,7 @@ function stepActions(steps: PlaybookStep[], out: Set<string> = new Set()): Set<s
 }
 
 describe.skipIf(files.length === 0)('real brain playbooks run through the executor', () => {
-  const SUPPORTED = new Set(['goto', 'wait_for', 'click', 'click_text', 'type', 'press', 'upload', 'scroll', 'delay', 'think',
-    'assert', 'extract', 'extract_url', 'extract_list', 'if_exists', 'foreach', 'screenshot']);
+  const SUPPORTED: ReadonlySet<string> = KNOWN_ACTIONS;
 
   it.each(files)('%s', async (file) => {
     const pb = JSON.parse(readFileSync(join(DIR, file), 'utf8')) as Playbook;
@@ -131,10 +134,13 @@ describe.skipIf(files.length === 0)('real brain playbooks run through the execut
     const guardSelectors = new Set((pb.guards ?? []).flatMap((g) => (g.selector ? [g.selector] : [])));
     const guardTexts = new Set((pb.guards ?? []).flatMap((g) => (g.text ? [g.text] : [])));
     const driver = new PermissiveDriver(guardSelectors, guardTexts, item);
+    // restore_session needs a local backup for this profile + platform; seed one (no real session data).
+    const sessions = new MemorySessions();
+    await sessions.save('ads-1', pb.platform, { v: 1, saved_at: new Date(0).toISOString(), origin: 'https://x.test', cookies: [cookie('sid')], local_storage: { k: 'v' } });
     const out = await runPlaybook(
-      job({ type: pb.type, payload, hbe: hbe({ hbe_delay_ms: 0, think_ms: 0, typing: { min_char_ms: 0, max_char_ms: 0, typo_rate: 0, word_pause_rate: 0, word_pause_ms: [0, 0] } }) }),
+      job({ type: pb.type, platform: pb.platform, payload, hbe: hbe({ hbe_delay_ms: 0, think_ms: 0, typing: { min_char_ms: 0, max_char_ms: 0, typo_rate: 0, word_pause_rate: 0, word_pause_ms: [0, 0] } }) }),
       pb,
-      { driver, sleep: async () => undefined, rng: () => 0.5, download: async (urls) => ({ paths: urls.map((_, i) => `/tmp/f${i}`), cleanup: async () => undefined }) },
+      { driver, sessions, sleep: async () => undefined, rng: () => 0.5, download: async (urls) => ({ paths: urls.map((_, i) => `/tmp/f${i}`), cleanup: async () => undefined }) },
     );
     expect(out.outputs).toBeTypeOf('object');
     for (const s of driver.strings) expect(s, 'unresolved template reached the page').not.toMatch(/\{\{|\}\}/);

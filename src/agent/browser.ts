@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Browser, Page } from 'playwright-core';
-import type { ListField, PageDriver } from './driver';
+import type { ListField, PageDriver, SessionCookie } from './driver';
 import type { Logger } from './util';
 
 export interface BrowserSession {
@@ -149,4 +149,28 @@ export class PlaywrightDriver implements PageDriver {
     );
   }
   async screenshot(): Promise<Buffer> { return this.page.screenshot({ type: 'png' }); }
+  async getCookies(): Promise<SessionCookie[]> {
+    return (await this.page.context().cookies()).map((c) => ({
+      name: c.name, value: c.value, domain: c.domain, path: c.path, expires: c.expires,
+      httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite,
+    }));
+  }
+  async addCookies(cookies: SessionCookie[]): Promise<void> {
+    await this.page.context().addCookies(cookies);
+  }
+  async getLocalStorage(): Promise<Record<string, string>> {
+    return this.page.evaluate(() => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k !== null) out[k] = window.localStorage.getItem(k) ?? '';
+      }
+      return out;
+    });
+  }
+  async setLocalStorage(items: Record<string, string>): Promise<void> {
+    await this.page.evaluate((entries) => {
+      for (const [k, v] of Object.entries(entries)) window.localStorage.setItem(k, v);
+    }, items);
+  }
 }

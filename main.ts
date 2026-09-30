@@ -11,6 +11,8 @@ import { errorMessage, AgentError } from './src/agent/util';
 import { BrainError } from './src/agent/brainClient';
 import { configStore, DASHBOARD_URL, maskKey, seedFromEnv } from './src/main/config';
 import { logger } from './src/main/logger';
+import { SessionVault } from './src/agent/sessionVault';
+import { safeStorageKey } from './src/main/sessionKey';
 import { trayIcon } from './src/main/trayIcon';
 import type { AgentUpsertProfileRequest } from './src/shared/contract';
 import { IPC, type AgentSnapshot, type IpcResult, type SettingsUpdate, type SettingsView, type UpdateCheckResult } from './src/shared/ipc';
@@ -47,6 +49,7 @@ async function boot(): Promise<void> {
     version: VERSION,
     machineName: hostname(),
     logger,
+    sessions: new SessionVault(join(app.getPath('userData'), 'session-backups'), safeStorageKey(join(app.getPath('userData'), 'session-backups', 'key.bin'))),
     emit: (s) => {
       lastSnapshot = s;
       win?.webContents.send(IPC.snapshot, s);
@@ -259,6 +262,10 @@ function registerIpc(): void {
     await rt().openProfile(String(adsId), typeof profileId === 'number' ? profileId : undefined);
     return { opened: true as const };
   }));
+  ipcMain.handle(IPC.getSessionBackups, (_e, ids: unknown) =>
+    wrap(() => rt().sessionBackups(Array.isArray(ids) ? ids.map((x) => String(x)).slice(0, 500) : [])));
+  ipcMain.handle(IPC.restoreSession, (_e, adsId: string, platform: string, profileId?: number) =>
+    wrap(() => rt().restoreProfileSession(String(adsId), String(platform), typeof profileId === 'number' ? profileId : undefined)));
   ipcMain.handle(IPC.checkForUpdates, () => wrap(() => checkForUpdates(false)));
   ipcMain.handle(IPC.openDashboard, () => shell.openExternal(DASHBOARD_URL));
 }

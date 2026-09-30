@@ -4,6 +4,19 @@
  */
 export interface ListField { selector?: string; attr?: string }
 
+/** A browser cookie as read from / written to the profile's context (session backups only). */
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  /** Unix seconds; -1 for a session cookie. */
+  expires: number;
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: 'Strict' | 'Lax' | 'None';
+}
+
 export interface PageDriver {
   goto(url: string, timeoutMs: number): Promise<void>;
   url(): string;
@@ -22,6 +35,12 @@ export interface PageDriver {
   read(selector: string, attr: string | undefined, timeoutMs: number): Promise<string | null>;
   readList(selector: string, fields: Record<string, ListField>, limit: number | undefined): Promise<Array<Record<string, string | null>>>;
   screenshot(): Promise<Buffer>;
+  /** Session backup/restore (Protocol 5). Values stay on this PC — never logged, never reported. */
+  getCookies(): Promise<SessionCookie[]>;
+  addCookies(cookies: SessionCookie[]): Promise<void>;
+  /** localStorage of the current page's origin. */
+  getLocalStorage(): Promise<Record<string, string>>;
+  setLocalStorage(items: Record<string, string>): Promise<void>;
 }
 
 /** True when a thrown error is a Playwright timeout. */

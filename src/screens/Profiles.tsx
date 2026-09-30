@@ -55,11 +55,19 @@ export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: Prof
   const [loading, setLoading] = useState(false);
   const [tests, setTests] = useState<Record<string, ProfileTestResult | 'running'>>({});
   const [bulk, setBulk] = useState(false);
+  /** adspower id → platform → ISO time of the newest local session backup (Protocol 5). */
+  const [backups, setBackups] = useState<Record<string, Record<string, string>>>({});
+  const [restores, setRestores] = useState<Record<number, 'running' | { ok: boolean; text: string; detail?: string }>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
     const [b, a] = await Promise.all([sk.getBrainProfiles(), sk.getAdsPowerProfiles()]);
     if (b.ok) { setBrain(b.data); setError(null); } else setError(b.error.message);
+    if (b.ok) {
+      const ids = [...new Set(b.data.brands.flatMap((x) => x.profiles.map((p) => p.adspower_profile_id)))];
+      const r = await sk.getSessionBackups(ids);
+      if (r.ok) setBackups(r.data);
+    }
     if (a.ok) { setAds(a.data); setAdsError(null); } else { setAds(null); setAdsError(a.error.message); }
     setLoading(false);
   }, []);
@@ -105,6 +113,17 @@ export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: Prof
     setTests((t) => ({ ...t, [adsId]: r.ok ? { opened: true, ip: null, error: null } : { opened: false, ip: null, error: { code: r.error.code ?? 'ADSPOWER_ERROR', message: r.error.message } } }));
   };
 
+  const restore = async (adsId: string, platform: string, profileId: number): Promise<void> => {
+    setRestores((x) => ({ ...x, [profileId]: 'running' }));
+    const r = await sk.restoreSession(adsId, platform, profileId);
+    setRestores((x) => ({
+      ...x,
+      [profileId]: r.ok
+        ? { ok: true, text: 'Saved login restored — checking the login now.' }
+        : { ok: false, text: r.error.code === 'SESSION_EXPIRED' ? 'No saved login on this computer — use Re-login.' : 'The saved login could not be restored.', detail: r.error.code ? `${r.error.code}: ${r.error.message}` : r.error.message },
+    }));
+  };
+
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -132,6 +151,9 @@ export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: Prof
               const hc = checks.get(p.id);
               const checking = t === 'running' || (hc !== undefined && PENDING.includes(hc.state));
               const missing = ads !== null && !adsIds.has(p.adspower_profile_id);
+              const lastBackup = backups[p.adspower_profile_id]?.[p.platform] ?? null;
+              const rs = restores[p.id];
+              const restoring = rs === 'running';
               return (
                 <div key={p.id} className="py-3" style={{ borderColor: 'var(--border)' }}>
                   <div className="flex flex-wrap items-center gap-3">
@@ -146,11 +168,17 @@ export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: Prof
                     <span>Handle: <span className="text-ink-1">{p.handle ?? '—'}</span></span>
                     <span>Last: {timeAgo(p.last_action_at)}</span>
                     <span>IP: {t && t !== 'running' && t.ip ? t.ip : p.proxy_host ?? '—'} ({PROXY_NAME[p.proxy_type] ?? p.proxy_type})</span>
+                    <span>Last backup: {lastBackup ? new Date(lastBackup).toLocaleString() : 'none'}</span>
                     {missing && <span className="text-gold">Not found in AdsPower</span>}
                     <span className="ml-auto flex gap-2">
                       {(p.status === 'session_expired' || hc?.code === 'SESSION_EXPIRED' || hc?.code === 'CAPTCHA') && (
                         <button type="button" className="btn-ghost btn-sm" disabled={checking} onClick={() => void relogin(p.adspower_profile_id, p.id)}>Re-login</button>
                       )}
+                      <button type="button" className="btn-ghost btn-sm" disabled={checking || restoring || !lastBackup}
+                        title={lastBackup ? 'Put the saved login back into this profile' : 'No saved login on this computer yet'}
+                        onClick={() => void restore(p.adspower_profile_id, p.platform, p.id)}>
+                        {restoring ? 'Restoring…' : 'Restore session'}
+                      </button>
                       <button type="button" className="btn-ghost btn-sm" onClick={() => onAdd({
                         brand_id: b.brand_id, platform: p.platform, handle: p.handle ?? '', adspower_profile_id: p.adspower_profile_id,
                         proxy_type: p.proxy_type, proxy_host: p.proxy_host ?? '', proxy_port: p.proxy_port ?? '',
@@ -165,6 +193,11 @@ export function Profiles({ snap, onAdd }: { snap: AgentSnapshot; onAdd: (d: Prof
                       {t.opened
                         ? <Notice kind="ok">Profile opened successfully{t.ip ? ` — IP: ${t.ip}` : ''}</Notice>
                         : <Notice kind="error">This profile could not be opened. <Details text={t.error ? `${t.error.code}: ${t.error.message}` : null} /></Notice>}
+                    </div>
+                  )}
+                  {rs && rs !== 'running' && (
+                    <div className="mt-2 pl-9">
+                      <Notice kind={rs.ok ? 'ok' : 'error'}>{rs.text}{rs.detail && <Details text={rs.detail} />}</Notice>
                     </div>
                   )}
                   {hc && (() => {

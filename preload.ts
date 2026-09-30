@@ -25,6 +25,8 @@ const api: SkBridge = {
   testProfile: (adsId, profileId) => ipcRenderer.invoke(IPC.testProfile, adsId, profileId),
   saveProfile: (req) => ipcRenderer.invoke(IPC.saveProfile, req),
   openProfile: (adsId, profileId) => ipcRenderer.invoke(IPC.openProfile, adsId, profileId),
+  getSessionBackups: (ids) => ipcRenderer.invoke(IPC.getSessionBackups, ids),
+  restoreSession: (adsId, platform, profileId) => ipcRenderer.invoke(IPC.restoreSession, adsId, platform, profileId),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   openDashboard: () => ipcRenderer.invoke(IPC.openDashboard),
 };

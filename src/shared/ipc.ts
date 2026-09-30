@@ -139,6 +139,10 @@ export interface SkBridge {
    * With profileId, a login check is queued automatically once the user closes the window.
    */
   openProfile(adspowerProfileId: string, profileId?: number): Promise<IpcResult<{ opened: true }>>;
+  /** adspower_profile_id → platform → ISO time of the newest session backup on this PC. */
+  getSessionBackups(adspowerProfileIds: string[]): Promise<IpcResult<Record<string, Record<string, string>>>>;
+  /** Restores the newest local session backup into the profile, then queues a login check. */
+  restoreSession(adspowerProfileId: string, platform: string, profileId?: number): Promise<IpcResult<{ restored: number; health_job_id: string | null }>>;
   checkForUpdates(): Promise<IpcResult<UpdateCheckResult>>;
   openDashboard(): Promise<void>;
 }
@@ -159,6 +163,8 @@ export const IPC = {
   testProfile: 'sk:test-profile',
   saveProfile: 'sk:save-profile',
   openProfile: 'sk:open-profile',
+  getSessionBackups: 'sk:get-session-backups',
+  restoreSession: 'sk:restore-session',
   checkForUpdates: 'sk:check-updates',
   openDashboard: 'sk:open-dashboard',
 } as const;

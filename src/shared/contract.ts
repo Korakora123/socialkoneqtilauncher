@@ -522,7 +522,11 @@ export type PlaybookStep =
       fields: Record<string, { selector?: string; attr?: string }>; label?: string }
   | { id: string; action: 'if_exists'; selector: string; then: PlaybookStep[]; else?: PlaybookStep[]; label?: string }
   | { id: string; action: 'foreach'; items: string; steps: PlaybookStep[]; label?: string }
-  | { id: string; action: 'screenshot'; as?: string; label?: string };
+  | { id: string; action: 'screenshot'; as?: string; label?: string }
+  /** Protocol 5 (profile corruption): save/restore the profile's cookies + localStorage in an encrypted file
+   *  ON THE USER'S PC ONLY (never sent to the brain). outputs[as] = number of cookies saved/restored. */
+  | { id: string; action: 'backup_session'; as?: string; label?: string }
+  | { id: string; action: 'restore_session'; as?: string; optional?: boolean; label?: string };
 
 // ───────────────────────────────── client portal ─────────────────────────────────
 

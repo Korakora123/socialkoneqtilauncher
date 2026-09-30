@@ -1,5 +1,6 @@
 import type { HbePlan, Job, Playbook } from '../src/shared/contract';
-import type { ListField, PageDriver } from '../src/agent/driver';
+import type { ListField, PageDriver, SessionCookie } from '../src/agent/driver';
+import type { SessionBackup, SessionStore } from '../src/agent/sessionVault';
 
 export const hbe = (over: Partial<HbePlan> = {}): HbePlan => ({
   hbe_delay_ms: 1000,
@@ -95,6 +96,44 @@ export class FakeDriver implements PageDriver {
     return limit !== undefined ? rows.slice(0, limit) : rows;
   }
   async screenshot(): Promise<Buffer> { this.calls.push('screenshot'); return Buffer.from('png'); }
+  /** Browser-context cookie jar and per-origin localStorage. */
+  cookieJar: SessionCookie[] = [];
+  storage: Record<string, Record<string, string>> = {};
+  private origin(): string { try { return new URL(this.currentUrl).origin; } catch { return 'null'; } }
+  async getCookies(): Promise<SessionCookie[]> { this.calls.push('getCookies'); return this.cookieJar.map((c) => ({ ...c })); }
+  async addCookies(cookies: SessionCookie[]): Promise<void> {
+    this.calls.push(`addCookies ${cookies.length}`);
+    for (const c of cookies) {
+      this.cookieJar = this.cookieJar.filter((x) => !(x.name === c.name && x.domain === c.domain && x.path === c.path));
+      this.cookieJar.push({ ...c });
+    }
+  }
+  async getLocalStorage(): Promise<Record<string, string>> { this.calls.push('getLocalStorage'); return { ...(this.storage[this.origin()] ?? {}) }; }
+  async setLocalStorage(items: Record<string, string>): Promise<void> {
+    this.calls.push(`setLocalStorage ${this.origin()}`);
+    this.storage[this.origin()] = { ...(this.storage[this.origin()] ?? {}), ...items };
+  }
+}
+
+export const cookie = (name: string, value = 'v', over: Partial<SessionCookie> = {}): SessionCookie => ({
+  name, value, domain: '.site.test', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax', ...over,
+});
+
+/** In-memory SessionStore (newest last). */
+export class MemorySessions implements SessionStore {
+  data = new Map<string, SessionBackup[]>();
+  async save(adsId: string, platform: string, b: SessionBackup): Promise<void> {
+    const k = `${adsId}/${platform}`;
+    this.data.set(k, [...(this.data.get(k) ?? []), b]);
+  }
+  async loadLatest(adsId: string, platform: string): Promise<SessionBackup | null> {
+    return this.data.get(`${adsId}/${platform}`)?.at(-1) ?? null;
+  }
+  async lastBackups(adsId: string): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of this.data) if (k.startsWith(`${adsId}/`) && v.length) out[k.slice(adsId.length + 1)] = v[v.length - 1].saved_at;
+    return out;
+  }
 }
 
 export function recordingSleep(): { sleep: (ms: number, signal?: AbortSignal) => Promise<void>; waits: number[] } {

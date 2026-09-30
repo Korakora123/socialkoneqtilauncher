@@ -17,6 +17,7 @@ import { executeJob } from './jobRunner';
 import { ProfileLocks } from './locks';
 import { Poller } from './poller';
 import { AdsPowerClient } from './profileManager';
+import { noBackupError, restoreSession, type SessionStore } from './sessionVault';
 import { AgentError, errorMessage, sleep, type Logger, type SleepFn } from './util';
 
 export interface AgentConfig {
@@ -42,6 +43,8 @@ export interface RuntimeOptions {
   logger: Logger;
   emit?: (s: AgentSnapshot) => void;
   onLatestVersion?: (v: string) => void;
+  /** Encrypted local session backups (Protocol 5). Stays on this PC. */
+  sessions?: SessionStore;
   /** Injectable for tests. */
   factories?: {
     brain?: (cfg: AgentConfig, version: string) => BrainClient;
@@ -238,6 +241,7 @@ export class AgentRuntime {
         connect: (ws) => (this.opts.factories?.connect ?? connectProfile)(ws, this.log),
         download: this.opts.factories?.download ?? downloadToTemp,
         sleep: this.sleep,
+        ...(this.opts.sessions ? { sessions: this.opts.sessions } : {}),
         logger: this.log,
         onProgress: (j, i, total, label) => {
           const v = this.runningViews.get(j.id);
@@ -448,6 +452,45 @@ export class AgentRuntime {
       }
     }
     return result;
+  }
+
+  // ───────────────────────────── session backups (Protocol 5) ─────────────────────────────
+
+  /** adspower_profile_id → platform → ISO time of the newest local backup. Read from local files only. */
+  async sessionBackups(adsIds: string[]): Promise<Record<string, Record<string, string>>> {
+    const out: Record<string, Record<string, string>> = {};
+    if (!this.opts.sessions) return out;
+    for (const id of adsIds) out[id] = await this.opts.sessions.lastBackups(id).catch(() => ({}));
+    return out;
+  }
+
+  /**
+   * Restores the newest local backup into the AdsPower profile (same logic as the restore_session
+   * step), then — with a profileId — queues the brain's login check for the profile.
+   */
+  async restoreProfileSession(adsId: string, platform: string, profileId?: number): Promise<{ restored: number; health_job_id: string | null }> {
+    const store = this.opts.sessions;
+    if (!store) throw new AgentError('INTERNAL', 'Session backups are not available on this computer');
+    const owner = `restore:${adsId}:${Date.now()}`;
+    if (!this.locks.tryAcquire(adsId, owner)) throw new AgentError('PROFILE_BUSY', 'This profile is busy with a job right now');
+    let session: BrowserSession | null = null;
+    let started = false;
+    let restored: number | null;
+    try {
+      const s = await this.adspower.start(adsId);
+      started = true;
+      session = await (this.opts.factories?.connect ?? connectProfile)(s.wsEndpoint, this.log);
+      const driver = session.driver;
+      restored = await restoreSession(driver, store, adsId, platform, (url) => driver.goto(url, 60_000));
+    } finally {
+      if (session) await session.close().catch(() => undefined);
+      if (started) await this.adspower.stop(adsId).catch(() => undefined);
+      this.locks.release(adsId, owner);
+    }
+    if (restored === null) throw noBackupError();
+    this.log.info('session restored from local backup', { adspower_profile_id: adsId, platform });
+    const health_job_id = profileId !== undefined ? await this.queueHealthCheck(profileId, adsId) : null;
+    return { restored, health_job_id };
   }
 
   // ───────────────────────────── state ─────────────────────────────

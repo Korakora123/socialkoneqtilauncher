@@ -3,6 +3,7 @@ import type { BrowserSession } from './browser';
 import type { DownloadFn } from './download';
 import { runPlaybook } from './executor';
 import type { AdsPowerClient } from './profileManager';
+import type { SessionStore } from './sessionVault';
 import { AgentError, errorMessage, type Logger, type SleepFn } from './util';
 
 export interface JobRunnerDeps {
@@ -12,6 +13,7 @@ export interface JobRunnerDeps {
   connect: (wsEndpoint: string) => Promise<BrowserSession>;
   download: DownloadFn;
   sleep: SleepFn;
+  sessions?: SessionStore;
   now?: () => Date;
   logger: Logger;
   onProgress?: (job: Job, stepIndex: number, stepTotal: number, label: string) => void;
@@ -71,6 +73,7 @@ export async function executeJob(job: Job, deps: JobRunnerDeps, signal?: AbortSi
       driver: session.driver,
       sleep: deps.sleep,
       download: deps.download,
+      ...(deps.sessions ? { sessions: deps.sessions } : {}),
       signal: ctrl.signal,
       onProgress: (i, total, label) => {
         deps.onProgress?.(job, i, total, label);
